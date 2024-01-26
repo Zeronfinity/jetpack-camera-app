@@ -8,7 +8,8 @@ androidxCore = "1.12.0"
 androidxCoreKtx = "1.12.0"
 androidxTracing = "1.2.0"
 benchmarkMacroJunit4 = "1.2.2"
-camerax = "1.4.0-SNAPSHOT"
+camerax = "1.4.0-alpha05"
+cameraxTesting = "1.0.0-alpha01"
 compose = "1.5.4"
 composeBom = "2023.10.01"
 composeMaterial3 = "1.1.2"
@@ -57,6 +58,7 @@ camera-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "cam
 camera-core = { module = "androidx.camera:camera-core", version.ref = "camerax" }
 camera-extensions = { module = "androidx.camera:camera-extensions", version.ref = "camerax" }
 camera-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "camerax" }
+camera-testing = { module = "androidx.camera:camera-testing", version.ref = "cameraxTesting" }
 camera-video = { module = "androidx.camera:camera-video", version.ref = "camerax" }
 camera-view = { module = "androidx.camera:camera-view", version.ref = "camerax" }
 compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
