@@ -53,6 +53,7 @@ android {
 
 dependencies {
     // Testing
+    testImplementation(libs.camera.testing)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

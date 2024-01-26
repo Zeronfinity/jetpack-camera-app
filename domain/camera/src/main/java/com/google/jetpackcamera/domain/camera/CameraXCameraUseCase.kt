@@ -37,11 +37,14 @@ import androidx.camera.core.Preview
 import androidx.camera.core.UseCaseGroup
 import androidx.camera.core.ViewPort
 import androidx.camera.core.ZoomState
+import androidx.camera.core.usecases.ImageCaptureUseCase
+import androidx.camera.core.usecases.PreviewUseCase
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.MediaStoreOutputOptions
 import androidx.camera.video.Recorder
 import androidx.camera.video.Recording
 import androidx.camera.video.VideoCapture
+import androidx.camera.video.VideoCaptureUseCase
 import androidx.concurrent.futures.await
 import androidx.core.content.ContextCompat
 import com.google.jetpackcamera.domain.camera.CameraUseCase.Companion.INVALID_ZOOM_SCALE
@@ -86,15 +89,16 @@ constructor(
     private lateinit var cameraProvider: ProcessCameraProvider
 
     // TODO apply flash from settings
-    private val imageCaptureUseCase = ImageCapture.Builder().build()
+    private val imageCaptureUseCase: ImageCaptureUseCase = ImageCapture.Builder().build()
 
     private val recorder = Recorder.Builder().setExecutor(
         defaultDispatcher.asExecutor()
     ).build()
-    private val videoCaptureUseCase = VideoCapture.withOutput(recorder)
+    private val videoCaptureUseCase: VideoCaptureUseCase<Recorder> =
+        VideoCapture.withOutput(recorder)
     private var recording: Recording? = null
 
-    private lateinit var previewUseCase: Preview
+    private lateinit var previewUseCase: PreviewUseCase
     private lateinit var useCaseGroup: UseCaseGroup
 
     private lateinit var aspectRatio: AspectRatio
