@@ -13,6 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+@file:OptIn(ExperimentalSessionConfig::class)
+
 package com.google.jetpackcamera.core.camera
 
 import android.app.Application
@@ -25,11 +27,19 @@ import android.provider.MediaStore
 import android.util.Log
 import android.util.Range
 import androidx.camera.core.CameraInfo
+import androidx.camera.core.CameraSelector
 import androidx.camera.core.DynamicRange as CXDynamicRange
+import androidx.camera.core.ExperimentalSessionConfig
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCapture.OutputFileOptions
 import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.Preview
+import androidx.camera.core.SessionConfig
 import androidx.camera.core.SurfaceRequest
+import androidx.camera.core.featuregroup.GroupableFeature
+import androidx.camera.core.featuregroup.GroupableFeature.Companion.HDR_HLG10
+import androidx.camera.core.featuregroup.GroupableFeature.Companion.IMAGE_ULTRA_HDR
+import androidx.camera.core.featuregroup.GroupableFeature.Companion.PREVIEW_STABILIZATION
 import androidx.camera.core.takePicture
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.lifecycle.awaitInstance
@@ -152,109 +162,7 @@ constructor(
                 for (lensFacing in availableCameraLenses) {
                     val selector = lensFacing.toCameraSelector()
                     selector.filter(availableCameraInfos).firstOrNull()?.let { camInfo ->
-                        val videoCapabilities = Recorder.getVideoCapabilities(camInfo)
-                        val supportedDynamicRanges =
-                            videoCapabilities.supportedDynamicRanges
-                                .mapNotNull(CXDynamicRange::toSupportedAppDynamicRange)
-                                .toSet()
-                        val supportedVideoQualitiesMap =
-                            buildMap {
-                                for (dynamicRange in supportedDynamicRanges) {
-                                    val supportedVideoQualities =
-                                        videoCapabilities.getSupportedQualities(
-                                            dynamicRange.toCXDynamicRange()
-                                        ).map { it.toVideoQuality() }
-                                    put(dynamicRange, supportedVideoQualities)
-                                }
-                            }
-                        val zoomState = camInfo.zoomState.value
-                        val supportedZoomRange: Range<Float>? =
-                            zoomState?.let { Range(it.minZoomRatio, it.maxZoomRatio) }
-
-                        val supportedStabilizationModes = buildSet {
-                            if (camInfo.isPreviewStabilizationSupported) {
-                                add(StabilizationMode.ON)
-                                add(StabilizationMode.AUTO)
-                            }
-
-                            if (camInfo.isVideoStabilizationSupported) {
-                                add(StabilizationMode.HIGH_QUALITY)
-                            }
-
-                            if (camInfo.isOpticalStabilizationSupported) {
-                                add(StabilizationMode.OPTICAL)
-                                add(StabilizationMode.AUTO)
-                            }
-
-                            add(StabilizationMode.OFF)
-                        }
-
-                        val unsupportedStabilizationFpsMap = buildMap {
-                            for (stabilizationMode in supportedStabilizationModes) {
-                                when (stabilizationMode) {
-                                    StabilizationMode.ON -> setOf(FPS_15, FPS_60)
-                                    StabilizationMode.HIGH_QUALITY -> setOf(FPS_60)
-                                    StabilizationMode.OPTICAL -> emptySet()
-                                    else -> null
-                                }?.let { put(stabilizationMode, it) }
-                            }
-                        }
-
-                        val supportedFixedFrameRates =
-                            camInfo.filterSupportedFixedFrameRates(FIXED_FRAME_RATES)
-                        val supportedImageFormats = camInfo.supportedImageFormats
-                        val supportedIlluminants = buildSet {
-                            if (camInfo.hasFlashUnit()) {
-                                add(Illuminant.FLASH_UNIT)
-                            }
-
-                            if (lensFacing == LensFacing.FRONT) {
-                                add(Illuminant.SCREEN)
-                            }
-
-                            if (camInfo.isLowLightBoostSupported) {
-                                add(Illuminant.LOW_LIGHT_BOOST)
-                            }
-                        }
-
-                        val supportedFlashModes = buildSet {
-                            add(FlashMode.OFF)
-                            if ((
-                                    setOf(
-                                        Illuminant.FLASH_UNIT,
-                                        Illuminant.SCREEN
-                                    ) intersect supportedIlluminants
-                                    ).isNotEmpty()
-                            ) {
-                                add(FlashMode.ON)
-                                add(FlashMode.AUTO)
-                            }
-
-                            if (Illuminant.LOW_LIGHT_BOOST in supportedIlluminants) {
-                                add(FlashMode.LOW_LIGHT_BOOST)
-                            }
-                        }
-
-                        put(
-                            lensFacing,
-                            CameraConstraints(
-                                supportedStabilizationModes = supportedStabilizationModes,
-                                supportedFixedFrameRates = supportedFixedFrameRates,
-                                supportedDynamicRanges = supportedDynamicRanges,
-                                supportedImageFormatsMap = mapOf(
-                                    // Only JPEG is supported in single-stream mode, since
-                                    // single-stream mode uses CameraEffect, which does not support
-                                    // Ultra HDR now.
-                                    Pair(StreamConfig.SINGLE_STREAM, setOf(ImageOutputFormat.JPEG)),
-                                    Pair(StreamConfig.MULTI_STREAM, supportedImageFormats)
-                                ),
-                                supportedVideoQualitiesMap = supportedVideoQualitiesMap,
-                                supportedIlluminants = supportedIlluminants,
-                                supportedFlashModes = supportedFlashModes,
-                                supportedZoomRange = supportedZoomRange,
-                                unsupportedStabilizationFpsMap = unsupportedStabilizationFpsMap
-                            )
-                        )
+                        put(lensFacing, createCameraConstraints(camInfo, lensFacing))
                     }
                 }
             }
@@ -274,6 +182,7 @@ constructor(
                 .tryApplyCaptureModeConstraints()
                 .tryApplyVideoQualityConstraints()
                 .tryApplyCaptureModeConstraints()
+
         if (isDebugMode && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             withContext(iODispatcher) {
                 val cameraPropertiesJSON =
@@ -289,6 +198,112 @@ constructor(
                 Log.d(TAG, "JCACameraProperties written to ${file.path}. \n$cameraPropertiesJSON")
             }
         }
+    }
+
+    private fun createCameraConstraints(
+        camInfo: CameraInfo,
+        lensFacing: LensFacing
+    ): CameraConstraints {
+        val videoCapabilities = Recorder.getVideoCapabilities(camInfo)
+        val supportedDynamicRanges =
+            videoCapabilities.supportedDynamicRanges
+                .mapNotNull(CXDynamicRange::toSupportedAppDynamicRange)
+                .toSet()
+        val supportedVideoQualitiesMap =
+            buildMap {
+                for (dynamicRange in supportedDynamicRanges) {
+                    val supportedVideoQualities =
+                        videoCapabilities.getSupportedQualities(
+                            dynamicRange.toCXDynamicRange()
+                        ).map { it.toVideoQuality() }
+                    put(dynamicRange, supportedVideoQualities)
+                }
+            }
+        val zoomState = camInfo.zoomState.value
+        val supportedZoomRange: Range<Float>? =
+            zoomState?.let { Range(it.minZoomRatio, it.maxZoomRatio) }
+
+        val supportedStabilizationModes = buildSet {
+            if (camInfo.isPreviewStabilizationSupported) {
+                add(StabilizationMode.ON)
+                add(StabilizationMode.AUTO)
+            }
+
+            if (camInfo.isVideoStabilizationSupported) {
+                add(StabilizationMode.HIGH_QUALITY)
+            }
+
+            if (camInfo.isOpticalStabilizationSupported) {
+                add(StabilizationMode.OPTICAL)
+                add(StabilizationMode.AUTO)
+            }
+
+            add(StabilizationMode.OFF)
+        }
+
+        val unsupportedStabilizationFpsMap = buildMap {
+            for (stabilizationMode in supportedStabilizationModes) {
+                when (stabilizationMode) {
+                    StabilizationMode.ON -> setOf(FPS_15, FPS_60)
+                    StabilizationMode.HIGH_QUALITY -> setOf(FPS_60)
+                    StabilizationMode.OPTICAL -> emptySet()
+                    else -> null
+                }?.let { put(stabilizationMode, it) }
+            }
+        }
+
+        val supportedFixedFrameRates =
+            camInfo.filterSupportedFixedFrameRates(FIXED_FRAME_RATES)
+        val supportedImageFormats = camInfo.supportedImageFormats
+        val supportedIlluminants = buildSet {
+            if (camInfo.hasFlashUnit()) {
+                add(Illuminant.FLASH_UNIT)
+            }
+
+            if (lensFacing == LensFacing.FRONT) {
+                add(Illuminant.SCREEN)
+            }
+
+            if (camInfo.isLowLightBoostSupported) {
+                add(Illuminant.LOW_LIGHT_BOOST)
+            }
+        }
+
+        val supportedFlashModes = buildSet {
+            add(FlashMode.OFF)
+            if ((
+                    setOf(
+                        Illuminant.FLASH_UNIT,
+                        Illuminant.SCREEN
+                    ) intersect supportedIlluminants
+                    ).isNotEmpty()
+            ) {
+                add(FlashMode.ON)
+                add(FlashMode.AUTO)
+            }
+
+            if (Illuminant.LOW_LIGHT_BOOST in supportedIlluminants) {
+                add(FlashMode.LOW_LIGHT_BOOST)
+            }
+        }
+
+        return CameraConstraints(
+            supportedStabilizationModes = supportedStabilizationModes,
+            supportedFixedFrameRates = supportedFixedFrameRates,
+            supportedDynamicRanges = supportedDynamicRanges,
+            supportedImageFormatsMap = mapOf(
+                // Only JPEG is supported in single-stream mode, since
+                // single-stream mode uses CameraEffect, which does not support
+                // Ultra HDR now.
+                Pair(StreamConfig.SINGLE_STREAM, setOf(ImageOutputFormat.JPEG)),
+                Pair(StreamConfig.MULTI_STREAM, supportedImageFormats)
+            ),
+            supportedVideoQualitiesMap = supportedVideoQualitiesMap,
+            supportedIlluminants = supportedIlluminants,
+            supportedFlashModes = supportedFlashModes,
+            supportedZoomRange = supportedZoomRange,
+            unsupportedStabilizationFpsMap = unsupportedStabilizationFpsMap
+        )
     }
 
     override suspend fun runCamera() = coroutineScope {
@@ -379,6 +394,15 @@ constructor(
                             when (sessionSettings) {
                                 is PerpetualSessionSettings.SingleCamera -> runSingleCameraSession(
                                     sessionSettings,
+                                    onFeaturesSelected = { features, cameraInfo, sessionConfig ->
+                                        val unsupportedFeatures = getUnsupportedFeatures(
+                                            features,
+                                            cameraInfo,
+                                            sessionConfig
+                                        )
+
+                                        disableUnsupportedFeatures(unsupportedFeatures, cameraInfo)
+                                    },
                                     onImageCaptureCreated = { imageCapture ->
                                         imageCaptureUseCase = imageCapture
                                     }
@@ -399,6 +423,113 @@ constructor(
                 }
             }
     }
+
+    private fun getUnsupportedFeatures(
+        currentFeatures: Set<GroupableFeature>,
+        cameraInfo: CameraInfo,
+        sessionConfig: SessionConfig
+    ): Set<GroupableFeature> {
+        val unsupportedFeatures = mutableSetOf<GroupableFeature>()
+
+        val appFeatureOptions =
+            setOf(HDR_HLG10, GroupableFeature.FPS_60, PREVIEW_STABILIZATION, IMAGE_ULTRA_HDR)
+
+        appFeatureOptions.forEach { featureOption ->
+            if (currentFeatures.contains(featureOption)) return@forEach
+            if (
+                !cameraInfo.isFeatureGroupSupported(
+                    sessionConfig.withRequiredFeature(featureOption)
+                )
+            ) {
+                unsupportedFeatures.add(featureOption)
+            }
+        }
+        return unsupportedFeatures
+    }
+
+    private fun disableUnsupportedFeatures(
+        unsupportedFeatures: Set<GroupableFeature>,
+        cameraInfo: CameraInfo
+    ) {
+        val lensFacing = if (cameraInfo.lensFacing == CameraSelector.LENS_FACING_BACK) {
+            LensFacing.BACK
+        } else {
+            LensFacing.FRONT
+        }
+
+        val cameraConstraints = createCameraConstraints(cameraInfo, lensFacing)
+
+        val supportedDynamicRanges = cameraConstraints.supportedDynamicRanges.filterNot {
+            it == DynamicRange.HLG10 && unsupportedFeatures.contains(HDR_HLG10)
+        }
+
+        val supportedFrameRates = cameraConstraints.supportedFixedFrameRates.filterNot {
+            it == FPS_60 && unsupportedFeatures.contains(GroupableFeature.FPS_60)
+        }
+
+        val supportedStabilizationModes = cameraConstraints.supportedStabilizationModes.filterNot {
+            (it == StabilizationMode.ON && unsupportedFeatures.contains(PREVIEW_STABILIZATION)) ||
+                // TODO: Handle auto case during resolve instead of here
+                (
+                    it == StabilizationMode.AUTO && unsupportedFeatures.contains(
+                        PREVIEW_STABILIZATION
+                    )
+                    )
+        }
+
+        val supportedImageFormatsMap =
+            cameraConstraints.supportedImageFormatsMap.toMutableMap().apply {
+                entries.forEach { entry ->
+                    this[entry.key] = entry.value.filterNot {
+                        it == ImageOutputFormat.JPEG_ULTRA_HDR && unsupportedFeatures.contains(
+                            IMAGE_ULTRA_HDR
+                        )
+                    }.toSet()
+                }
+            }
+
+        val unsupportedStabilizationFpsMap =
+            cameraConstraints.unsupportedStabilizationFpsMap.toMutableMap().apply {
+                val unsupportedFrameRates = this[StabilizationMode.ON]
+                if (unsupportedFrameRates != null) {
+                    this[StabilizationMode.ON] = unsupportedFrameRates.filterNot {
+                        it == FPS_60 && !unsupportedFeatures.contains(GroupableFeature.FPS_60)
+                    }.toSet()
+                }
+            }
+
+        val updatedPerLensConstraints = systemConstraints.perLensConstraints.toMutableMap()
+
+        updatedPerLensConstraints[lensFacing] = cameraConstraints.copy(
+            supportedDynamicRanges = supportedDynamicRanges.toSet(),
+            supportedFixedFrameRates = supportedFrameRates.toSet(),
+            supportedStabilizationModes = supportedStabilizationModes.toSet(),
+            supportedImageFormatsMap = supportedImageFormatsMap,
+            unsupportedStabilizationFpsMap = unsupportedStabilizationFpsMap
+        )
+
+        systemConstraints = systemConstraints.copy(perLensConstraints = updatedPerLensConstraints)
+
+        constraintsRepository.updateSystemConstraints(systemConstraints)
+    }
+
+    private fun SessionConfig.withRequiredFeature(feature: GroupableFeature) = SessionConfig(
+        useCases =
+        useCases.filterIsInstance<Preview>() +
+            if (
+                (requiredFeatureGroup + feature).contains(
+                    IMAGE_ULTRA_HDR
+                )
+            ) {
+                listOf(ImageCapture.Builder().build())
+            } else {
+                emptyList()
+            },
+        viewPort = viewPort,
+        effects = effects,
+        frameRateRange = frameRateRange,
+        requiredFeatureGroup = requiredFeatureGroup + feature
+    )
 
     private fun resolveStabilizationMode(
         requestedStabilizationMode: StabilizationMode,
@@ -620,10 +751,13 @@ constructor(
                 else if (imageFormat == ImageOutputFormat.JPEG_ULTRA_HDR ||
                     dynamicRange == DynamicRange.HLG10
                 ) {
-                    // if both hdr video and image capture are supported, default to VIDEO_ONLY
+                    // if both hdr video and image capture are selected and supported, default to
+                    // VIDEO_ONLY
                     if (constraints.supportedDynamicRanges.contains(DynamicRange.HLG10) &&
+                        dynamicRange == DynamicRange.HLG10 &&
                         constraints.supportedImageFormatsMap[streamConfig]
-                            ?.contains(ImageOutputFormat.JPEG_ULTRA_HDR) == true
+                            ?.contains(ImageOutputFormat.JPEG_ULTRA_HDR) == true &&
+                        imageFormat == ImageOutputFormat.JPEG_ULTRA_HDR
                     ) {
                         if (captureMode == CaptureMode.STANDARD) {
                             CaptureMode.VIDEO_ONLY
@@ -631,11 +765,18 @@ constructor(
                             return this
                         }
                     }
-                    // return appropriate capture mode if only one is supported
-                    else if (imageFormat == ImageOutputFormat.JPEG_ULTRA_HDR) {
+                    // return appropriate capture mode if only one is supported and selected
+                    else if (imageFormat == ImageOutputFormat.JPEG_ULTRA_HDR &&
+                        constraints.supportedImageFormatsMap[streamConfig]
+                            ?.contains(ImageOutputFormat.JPEG_ULTRA_HDR) == true
+                    ) {
                         CaptureMode.IMAGE_ONLY
-                    } else {
+                    } else if (constraints.supportedDynamicRanges.contains(DynamicRange.HLG10) &&
+                        dynamicRange == DynamicRange.HLG10
+                    ) {
                         CaptureMode.VIDEO_ONLY
+                    } else {
+                        return this
                     }
                 } else {
                     defaultCaptureMode ?: return this
@@ -850,7 +991,7 @@ constructor(
         }
     }
 
-    override suspend fun setDynamicRange(dynamicRange: DynamicRange) {
+    override fun setDynamicRange(dynamicRange: DynamicRange) {
         currentSettings.update { old ->
             old?.copy(dynamicRange = dynamicRange)
                 ?.tryApplyDynamicRangeConstraints()
@@ -873,7 +1014,7 @@ constructor(
         }
     }
 
-    override suspend fun setImageFormat(imageFormat: ImageOutputFormat) {
+    override fun setImageFormat(imageFormat: ImageOutputFormat) {
         currentSettings.update { old ->
             old?.copy(imageFormat = imageFormat)
                 ?.tryApplyImageFormatConstraints()
@@ -889,13 +1030,13 @@ constructor(
         }
     }
 
-    override suspend fun setStabilizationMode(stabilizationMode: StabilizationMode) {
+    override fun setStabilizationMode(stabilizationMode: StabilizationMode) {
         currentSettings.update { old ->
             old?.copy(stabilizationMode = stabilizationMode)
         }
     }
 
-    override suspend fun setTargetFrameRate(targetFrameRate: Int) {
+    override fun setTargetFrameRate(targetFrameRate: Int) {
         currentSettings.update { old ->
             old?.copy(targetFrameRate = targetFrameRate)?.tryApplyFrameRateConstraints()
                 ?.tryApplyConcurrentCameraModeConstraints()

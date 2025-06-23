@@ -42,13 +42,21 @@ import androidx.camera.core.Camera
 import androidx.camera.core.CameraControl
 import androidx.camera.core.CameraEffect
 import androidx.camera.core.CameraInfo
+import androidx.camera.core.ExperimentalSessionConfig
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.Preview
+import androidx.camera.core.SessionConfig
 import androidx.camera.core.SurfaceOrientedMeteringPointFactory
 import androidx.camera.core.TorchState
+import androidx.camera.core.UseCase
 import androidx.camera.core.UseCaseGroup
 import androidx.camera.core.ViewPort
+import androidx.camera.core.featuregroup.GroupableFeature
+import androidx.camera.core.featuregroup.GroupableFeature.Companion.FPS_60
+import androidx.camera.core.featuregroup.GroupableFeature.Companion.HDR_HLG10
+import androidx.camera.core.featuregroup.GroupableFeature.Companion.IMAGE_ULTRA_HDR
+import androidx.camera.core.featuregroup.GroupableFeature.Companion.PREVIEW_STABILIZATION
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.video.FallbackStrategy
@@ -116,10 +124,12 @@ private val QUALITY_RANGE_MAP = mapOf(
 )
 
 context(CameraSessionContext)
+@kotlin.OptIn(ExperimentalSessionConfig::class)
 internal suspend fun runSingleCameraSession(
     sessionSettings: PerpetualSessionSettings.SingleCamera,
     // TODO(tm): ImageCapture should go through an event channel like VideoCapture
-    onImageCaptureCreated: (ImageCapture) -> Unit = {}
+    onImageCaptureCreated: (ImageCapture) -> Unit = {},
+    onFeaturesSelected: (Set<GroupableFeature>, CameraInfo, SessionConfig) -> Unit = { _, _, _ -> }
 ) = coroutineScope {
     Log.d(TAG, "Starting new single camera session")
     val initialCameraSelector = transientSettings.filterNotNull().first()
@@ -159,7 +169,7 @@ internal suspend fun runSingleCameraSession(
             cameraProvider.unbindAll()
             val currentCameraSelector = currentTransientSettings.primaryLensFacing
                 .toCameraSelector()
-            val useCaseGroup = createUseCaseGroup(
+            val sessionConfig = createSessionConfig(
                 cameraInfo = cameraProvider.getCameraInfo(currentCameraSelector),
                 videoCaptureUseCase = videoCaptureUseCase,
                 initialTransientSettings = currentTransientSettings,
@@ -168,17 +178,24 @@ internal suspend fun runSingleCameraSession(
                 dynamicRange = sessionSettings.dynamicRange,
                 imageFormat = sessionSettings.imageFormat,
                 captureMode = sessionSettings.captureMode,
+                targetFrameRate = sessionSettings.targetFrameRate,
                 effect = when (sessionSettings.streamConfig) {
                     StreamConfig.SINGLE_STREAM -> SingleSurfaceForcingEffect(this@coroutineScope)
                     StreamConfig.MULTI_STREAM -> null
                 }
-            ).apply {
-                getImageCapture()?.let(onImageCaptureCreated)
+            ) { selectedFeatures, cameraInfo, sessionConfig ->
+                // TODO: Since the same flow is used for updating both UI and CameraX, there's a
+                //  duplicate CameraX call while updating the flow for UI. We should handle this in
+                //  future.
+
+                onFeaturesSelected(selectedFeatures, cameraInfo, sessionConfig)
+            }.apply {
+                useCases.getImageCapture()?.let(onImageCaptureCreated)
             }
 
             cameraProvider.runWith(
                 currentCameraSelector,
-                useCaseGroup
+                sessionConfig
             ) { camera ->
                 Log.d(TAG, "Camera session started")
                 launch {
@@ -269,10 +286,10 @@ internal suspend fun runSingleCameraSession(
                         }
                 }
 
-                applyDeviceRotation(currentTransientSettings.deviceRotation, useCaseGroup)
+                applyDeviceRotation(currentTransientSettings.deviceRotation, sessionConfig.useCases)
                 processTransientSettingEvents(
                     camera,
-                    useCaseGroup,
+                    sessionConfig.useCases,
                     currentTransientSettings,
                     transientSettings
                 )
@@ -284,7 +301,7 @@ context(CameraSessionContext)
 @OptIn(ExperimentalCamera2Interop::class)
 internal suspend fun processTransientSettingEvents(
     camera: Camera,
-    useCaseGroup: UseCaseGroup,
+    useCases: List<UseCase>,
     initialTransientSettings: TransientSessionSettings,
     transientSettings: StateFlow<TransientSessionSettings?>
 ) {
@@ -322,7 +339,7 @@ internal suspend fun processTransientSettingEvents(
         }
 
         // apply camera torch mode to image capture
-        useCaseGroup.getImageCapture()?.let { imageCapture ->
+        useCases.getImageCapture()?.let { imageCapture ->
             if (prevTransientSettings.flashMode != newTransientSettings.flashMode) {
                 setFlashModeInternal(
                     imageCapture = imageCapture,
@@ -363,7 +380,7 @@ internal suspend fun processTransientSettingEvents(
                     "${prevTransientSettings.deviceRotation} -> " +
                     "${newTransientSettings.deviceRotation}"
             )
-            applyDeviceRotation(newTransientSettings.deviceRotation, useCaseGroup)
+            applyDeviceRotation(newTransientSettings.deviceRotation, useCases)
         }
 
         // setzoomratio when the primary zoom value changes.
@@ -379,9 +396,9 @@ internal suspend fun processTransientSettingEvents(
     }
 }
 
-internal fun applyDeviceRotation(deviceRotation: DeviceRotation, useCaseGroup: UseCaseGroup) {
+internal fun applyDeviceRotation(deviceRotation: DeviceRotation, useCases: List<UseCase>) {
     val targetRotation = deviceRotation.toUiSurfaceRotation()
-    useCaseGroup.useCases.forEach {
+    useCases.forEach {
         when (it) {
             is Preview -> {
                 // Preview's target rotation should not be updated with device rotation.
@@ -398,6 +415,105 @@ internal fun applyDeviceRotation(deviceRotation: DeviceRotation, useCaseGroup: U
             is VideoCapture<*> -> {
                 it.targetRotation = targetRotation
             }
+        }
+    }
+}
+
+// TODO: Reduce duplicate code between createSessionConfig and createUseCaseGroup
+
+context(CameraSessionContext)
+@kotlin.OptIn(ExperimentalSessionConfig::class)
+internal fun createSessionConfig(
+    cameraInfo: CameraInfo,
+    initialTransientSettings: TransientSessionSettings,
+    stabilizationMode: StabilizationMode,
+    aspectRatio: AspectRatio,
+    videoCaptureUseCase: VideoCapture<Recorder>?,
+    dynamicRange: DynamicRange,
+    imageFormat: ImageOutputFormat,
+    captureMode: CaptureMode,
+    targetFrameRate: Int?,
+    effect: CameraEffect? = null,
+    onFeaturesSelected: (Set<GroupableFeature>, CameraInfo, SessionConfig) -> Unit = { _, _, _ -> }
+): SessionConfig {
+    val previewUseCase =
+        createPreviewUseCase(
+            cameraInfo,
+            aspectRatio,
+            stabilizationMode
+        )
+
+    // only create image use case in image or standard
+    val imageCaptureUseCase = if (captureMode != CaptureMode.VIDEO_ONLY) {
+        createImageUseCase(cameraInfo, aspectRatio, dynamicRange, imageFormat)
+    } else {
+        null
+    }
+
+    imageCaptureUseCase?.let {
+        setFlashModeInternal(
+            imageCapture = imageCaptureUseCase,
+            flashMode = initialTransientSettings.flashMode,
+            isFrontFacing = cameraInfo.appLensFacing == LensFacing.FRONT
+        )
+    }
+
+    Log.d(
+        "Zeron",
+        "createSessionConfig: captureMode = $captureMode, imageFormat = $imageFormat" +
+            ", stabilizationMode = $stabilizationMode, targetFrameRate = $targetFrameRate" +
+            ", dynamicRange = $dynamicRange, initialTransientSettings = $initialTransientSettings"
+    )
+
+    val addImageCapture = imageCaptureUseCase != null
+
+    val addVideoCapture = videoCaptureUseCase != null
+
+    val useCases = mutableListOf<UseCase>().apply {
+        add(previewUseCase)
+
+        if (addImageCapture) {
+            add(imageCaptureUseCase!!)
+        }
+
+        if (addVideoCapture) {
+            add(videoCaptureUseCase!!)
+        }
+    }
+
+    Log.d(
+        TAG,
+        "Setting initial device rotation to ${initialTransientSettings.deviceRotation}"
+    )
+
+    val requiredFeatures = mutableSetOf<GroupableFeature>().apply {
+        // required since users explicitly set these features
+        if (dynamicRange == DynamicRange.HLG10) {
+            add(HDR_HLG10)
+        }
+        if (addImageCapture && imageFormat == ImageOutputFormat.JPEG_ULTRA_HDR) {
+            add(IMAGE_ULTRA_HDR)
+        }
+        if (targetFrameRate == 60) {
+            add(FPS_60)
+        }
+        if (stabilizationMode == StabilizationMode.ON) {
+            add(PREVIEW_STABILIZATION)
+        }
+    }
+
+    return SessionConfig(
+        useCases = useCases,
+        viewPort = ViewPort.Builder(
+            aspectRatio.ratio,
+            // Initialize rotation to Preview's rotation, which comes from Display rotation
+            previewUseCase.targetRotation
+        ).build(),
+        effects = effect?.let { listOf(it) } ?: emptyList(),
+        requiredFeatureGroup = requiredFeatures
+    ).apply {
+        setFeatureSelectionListener { selectedFeatures ->
+            onFeaturesSelected(selectedFeatures, cameraInfo, this)
         }
     }
 }

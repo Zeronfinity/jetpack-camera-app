@@ -111,19 +111,19 @@ interface CameraUseCase {
 
     suspend fun setStreamConfig(streamConfig: StreamConfig)
 
-    suspend fun setDynamicRange(dynamicRange: DynamicRange)
+    fun setDynamicRange(dynamicRange: DynamicRange)
 
     fun setDeviceRotation(deviceRotation: DeviceRotation)
 
     suspend fun setConcurrentCameraMode(concurrentCameraMode: ConcurrentCameraMode)
 
-    suspend fun setImageFormat(imageFormat: ImageOutputFormat)
+    fun setImageFormat(imageFormat: ImageOutputFormat)
 
     suspend fun setAudioEnabled(isAudioEnabled: Boolean)
 
-    suspend fun setStabilizationMode(stabilizationMode: StabilizationMode)
+    fun setStabilizationMode(stabilizationMode: StabilizationMode)
 
-    suspend fun setTargetFrameRate(targetFrameRate: Int)
+    fun setTargetFrameRate(targetFrameRate: Int)
 
     suspend fun setMaxVideoDuration(durationInMillis: Long)
 

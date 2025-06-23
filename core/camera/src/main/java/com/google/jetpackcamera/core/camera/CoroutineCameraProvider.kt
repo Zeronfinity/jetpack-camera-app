@@ -21,6 +21,8 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.CompositionSettings
 import androidx.camera.core.ConcurrentCamera
 import androidx.camera.core.ConcurrentCamera.SingleCameraConfig
+import androidx.camera.core.ExperimentalSessionConfig
+import androidx.camera.core.SessionConfig
 import androidx.camera.core.UseCaseGroup
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.lifecycle.Lifecycle
@@ -34,17 +36,18 @@ import kotlinx.coroutines.coroutineScope
 /**
  * Runs a camera for the duration of a coroutine.
  *
- * The camera selected by [cameraSelector] will run with the provided [useCases] for the
+ * The camera selected by [cameraSelector] will run with the provided [SessionConfig] for the
  * duration that [block] is active. This means that [block] should suspend until the camera
  * should be closed.
  */
+@OptIn(ExperimentalSessionConfig::class)
 suspend fun <R> ProcessCameraProvider.runWith(
     cameraSelector: CameraSelector,
-    useCases: UseCaseGroup,
+    sessionConfig: SessionConfig,
     block: suspend CoroutineScope.(Camera) -> R
 ): R = coroutineScope {
     val scopedLifecycle = CoroutineLifecycleOwner(coroutineContext)
-    block(this@runWith.bindToLifecycle(scopedLifecycle, cameraSelector, useCases))
+    block(this@runWith.bindToLifecycle(scopedLifecycle, cameraSelector, sessionConfig))
 }
 
 @SuppressLint("RestrictedApi")

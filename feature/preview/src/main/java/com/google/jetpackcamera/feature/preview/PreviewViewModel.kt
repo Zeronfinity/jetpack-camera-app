@@ -157,6 +157,11 @@ class PreviewViewModel @AssistedInject constructor(
                 cameraUseCase.getCurrentCameraState(),
                 lockedRecordingState.filterNotNull().distinctUntilChanged()
             ) { cameraAppSettings, systemConstraints, cameraState, lockedState ->
+                Log.d("Zeron", "constraintsRepository = $constraintsRepository")
+                Log.d("Zeron", "cameraAppSettings = $cameraAppSettings")
+                Log.d("Zeron", "systemConstraints = $systemConstraints")
+                Log.d("Zeron", "cameraState = $cameraState")
+                Log.d("Zeron", "lockedState = $lockedState")
 
                 var flashModeUiState: FlashModeUiState
                 _previewUiState.update { old ->

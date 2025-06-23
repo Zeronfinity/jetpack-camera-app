@@ -112,7 +112,7 @@ internal suspend fun runConcurrentCameraSession(
 
         launch {
             processVideoControlEvents(
-                useCaseGroup.getVideoCapture(),
+                useCaseGroup.useCases.getVideoCapture(),
                 captureTypeSuffix = "DualCam"
             )
         }
@@ -158,10 +158,10 @@ internal suspend fun runConcurrentCameraSession(
                 }
         }
 
-        applyDeviceRotation(initialTransientSettings.deviceRotation, useCaseGroup)
+        applyDeviceRotation(initialTransientSettings.deviceRotation, useCaseGroup.useCases)
         processTransientSettingEvents(
             primaryCamera,
-            useCaseGroup,
+            useCaseGroup.useCases,
             initialTransientSettings,
             transientSettings
         )

@@ -200,7 +200,7 @@ class FakeCameraUseCase(defaultCameraSettings: CameraAppSettings = CameraAppSett
         }
     }
 
-    override suspend fun setDynamicRange(dynamicRange: DynamicRange) {
+    override fun setDynamicRange(dynamicRange: DynamicRange) {
         currentSettings.update { old ->
             old.copy(dynamicRange = dynamicRange)
         }
@@ -218,7 +218,7 @@ class FakeCameraUseCase(defaultCameraSettings: CameraAppSettings = CameraAppSett
         }
     }
 
-    override suspend fun setImageFormat(imageFormat: ImageOutputFormat) {
+    override fun setImageFormat(imageFormat: ImageOutputFormat) {
         currentSettings.update { old ->
             old.copy(imageFormat = imageFormat)
         }
@@ -230,13 +230,13 @@ class FakeCameraUseCase(defaultCameraSettings: CameraAppSettings = CameraAppSett
         }
     }
 
-    override suspend fun setStabilizationMode(stabilizationMode: StabilizationMode) {
+    override fun setStabilizationMode(stabilizationMode: StabilizationMode) {
         currentSettings.update { old ->
             old.copy(stabilizationMode = stabilizationMode)
         }
     }
 
-    override suspend fun setTargetFrameRate(targetFrameRate: Int) {
+    override fun setTargetFrameRate(targetFrameRate: Int) {
         currentSettings.update { old ->
             old.copy(targetFrameRate = targetFrameRate)
         }
