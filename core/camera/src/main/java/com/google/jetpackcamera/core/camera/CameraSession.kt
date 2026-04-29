@@ -68,6 +68,8 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.ContextCompat.checkSelfPermission
 import androidx.core.net.toFile
 import androidx.lifecycle.asFlow
+import androidx.tracing.trace
+import androidx.tracing.traceAsync
 import com.google.jetpackcamera.core.camera.FeatureGroupability.ExplicitlyGroupable
 import com.google.jetpackcamera.core.camera.effects.SingleSurfaceForcingEffect
 import com.google.jetpackcamera.core.common.FilePathGenerator
@@ -564,10 +566,12 @@ internal suspend fun createSessionConfig(
     sessionSettings: PerpetualSessionSettings.SingleCamera,
     videoCaptureUseCase: VideoCapture<Recorder>?,
     sessionScope: CoroutineScope
-): SessionConfig {
+): SessionConfig = traceAsync("JCA:CreateSessionConfig", "JCA:CreateSessionConfig".hashCode()) {
     val currentCameraSelector = initialTransientSettings.primaryLensFacing
         .toCameraSelector()
-    val cameraInfo = cameraProvider.getCameraInfo(currentCameraSelector)
+    val cameraInfo = trace("JCA:GetCameraInfo") {
+        cameraProvider.getCameraInfo(currentCameraSelector)
+    }
     val camera2Info = Camera2CameraInfo.from(cameraInfo)
     val cameraId = camera2Info.cameraId
 
@@ -580,33 +584,37 @@ internal suspend fun createSessionConfig(
             ) == true && lowLightBoostEffectProvider != null
         ) {
             captureResults = MutableStateFlow(null)
-            cameraEffect = lowLightBoostEffectProvider.create(
-                cameraId = cameraId,
-                captureResults = captureResults,
-                coroutineScope = sessionScope,
-                onSceneBrightnessChanged = { boostStrength ->
-                    val strength = LowLightBoostState.Active(strength = boostStrength)
-                    currentCameraState.update { old ->
-                        if (old.lowLightBoostState != strength) {
-                            old.copy(lowLightBoostState = strength)
-                        } else {
-                            old
+            cameraEffect = trace("JCA:CreateCameraEffects") {
+                lowLightBoostEffectProvider.create(
+                    cameraId = cameraId,
+                    captureResults = captureResults,
+                    coroutineScope = sessionScope,
+                    onSceneBrightnessChanged = { boostStrength ->
+                        val strength = LowLightBoostState.Active(strength = boostStrength)
+                        currentCameraState.update { old ->
+                            if (old.lowLightBoostState != strength) {
+                                old.copy(lowLightBoostState = strength)
+                            } else {
+                                old
+                            }
+                        }
+                    },
+                    onLowLightBoostError = { e ->
+                        Log.w(TAG, "Emitting LLB Error", e)
+                        currentCameraState.update { old ->
+                            old.copy(lowLightBoostState = LowLightBoostState.Error(e))
                         }
                     }
-                },
-                onLowLightBoostError = { e ->
-                    Log.w(TAG, "Emitting LLB Error", e)
-                    currentCameraState.update { old ->
-                        old.copy(lowLightBoostState = LowLightBoostState.Error(e))
-                    }
-                }
-            )
+                )
+            }
         }
     }
     if (cameraEffect == null &&
         sessionSettings.streamConfig == StreamConfig.SINGLE_STREAM
     ) {
-        cameraEffect = SingleSurfaceForcingEffect(sessionScope)
+        cameraEffect = trace("JCA:CreateCameraEffects") {
+            SingleSurfaceForcingEffect(sessionScope)
+        }
     }
 
     val previewUseCase =
@@ -658,7 +666,7 @@ internal suspend fun createSessionConfig(
 
     Log.d(TAG, "createSessionConfig: sessionSettings = $sessionSettings, features = $features")
 
-    return SessionConfig(
+    SessionConfig(
         useCases = useCases,
         viewPort = ViewPort.Builder(
             Rational(
@@ -727,7 +735,7 @@ internal fun createImageUseCase(
     aspectRatio: AspectRatio,
     dynamicRange: DynamicRange,
     imageFormat: ImageOutputFormat? = null
-): ImageCapture {
+): ImageCapture = trace("JCA:CreateImageUseCase") {
     val builder = ImageCapture.Builder()
     builder.setResolutionSelector(
         getResolutionSelector(cameraInfo.sensorLandscapeRatio, aspectRatio)
@@ -736,7 +744,7 @@ internal fun createImageUseCase(
     ) {
         builder.setOutputFormat(ImageCapture.OUTPUT_FORMAT_JPEG_ULTRA_HDR)
     }
-    return builder.build()
+    builder.build()
 }
 
 internal fun createVideoUseCase(
@@ -810,41 +818,44 @@ internal suspend fun createPreviewUseCase(
     aspectRatio: AspectRatio,
     stabilizationMode: StabilizationMode? = null,
     captureResults: MutableStateFlow<TotalCaptureResult?>? = null
-): Preview = Preview.Builder().apply {
-    updateCameraStateWithCaptureResults(
-        targetCameraInfo = cameraInfo,
-        captureResults = captureResults
-    )
-
-    // set preview stabilization
-    when (stabilizationMode) {
-        StabilizationMode.ON -> setPreviewStabilizationEnabled(true)
-        StabilizationMode.OPTICAL -> setOpticalStabilizationModeEnabled(true)
-        StabilizationMode.OFF -> {
-            setOpticalStabilizationModeEnabled(false)
-            // Setting this to false in Preview use case will disable video stabilization, even in
-            //  IMAGE_ONLY mode where there isn't a video capture use case attached
-            setPreviewStabilizationEnabled(false)
-        }
-        StabilizationMode.HIGH_QUALITY -> {} // No-op. Handled by VideoCapture use case.
-        null -> {} // No-op. Handled by feature groups API.
-        else -> throw UnsupportedOperationException(
-            "Unexpected stabilization mode: $stabilizationMode. Stabilization mode should always " +
-                "an explicit mode, such as ON, OPTICAL, OFF or HIGH_QUALITY"
+): Preview = traceAsync("JCA:CreatePreviewUseCase", "JCA:CreatePreviewUseCase".hashCode()) {
+    Preview.Builder().apply {
+        updateCameraStateWithCaptureResults(
+            targetCameraInfo = cameraInfo,
+            captureResults = captureResults
         )
-    }
 
-    setResolutionSelector(
-        getResolutionSelector(cameraInfo.sensorLandscapeRatio, aspectRatio)
-    )
-}.build()
-    .apply {
-        withContext(Dispatchers.Main) {
-            setSurfaceProvider { surfaceRequest ->
-                surfaceRequests.update { surfaceRequest }
+        // set preview stabilization
+        when (stabilizationMode) {
+            StabilizationMode.ON -> setPreviewStabilizationEnabled(true)
+            StabilizationMode.OPTICAL -> setOpticalStabilizationModeEnabled(true)
+            StabilizationMode.OFF -> {
+                setOpticalStabilizationModeEnabled(false)
+                // Setting this to false in Preview use case will disable video stabilization, even in
+                //  IMAGE_ONLY mode where there isn't a video capture use case attached
+                setPreviewStabilizationEnabled(false)
+            }
+
+            StabilizationMode.HIGH_QUALITY -> {} // No-op. Handled by VideoCapture use case.
+            null -> {} // No-op. Handled by feature groups API.
+            else -> throw UnsupportedOperationException(
+                "Unexpected stabilization mode: $stabilizationMode. Stabilization mode " +
+                    "should always an explicit mode, such as ON, OPTICAL, OFF or HIGH_QUALITY"
+            )
+        }
+
+        setResolutionSelector(
+            getResolutionSelector(cameraInfo.sensorLandscapeRatio, aspectRatio)
+        )
+    }.build()
+        .apply {
+            withContext(Dispatchers.Main) {
+                setSurfaceProvider { surfaceRequest ->
+                    surfaceRequests.update { surfaceRequest }
+                }
             }
         }
-    }
+}
 
 @OptIn(ExperimentalCamera2Interop::class)
 private fun Preview.Builder.setOpticalStabilizationModeEnabled(enabled: Boolean): Preview.Builder {

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 The Android Open Source Project
+ * Copyright (C) 2026 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,9 @@
 package com.google.jetpackcamera.benchmark
 
 import android.content.Intent
-import androidx.benchmark.macro.MacrobenchmarkScope
+import androidx.benchmark.macro.ExperimentalMetricApi
 import androidx.benchmark.macro.StartupMode
-import androidx.benchmark.macro.StartupTimingMetric
+import androidx.benchmark.macro.TraceSectionMetric
 import androidx.benchmark.macro.junit4.MacrobenchmarkRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.jetpackcamera.benchmark.utils.APP_REQUIRED_PERMISSIONS
@@ -29,64 +29,46 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * Run this benchmark from Studio to see startup measurements, and captured system traces
- * for investigating your app's performance.
- */
 @RunWith(AndroidJUnit4::class)
-class StartupBenchmark {
+class FeatureGroupQueryBenchmark {
     @get:Rule
     val benchmarkRule = MacrobenchmarkRule()
 
     @Test
-    fun startupColdWithPermissionRequest() {
-        benchmarkStartup()
-    }
+    fun featureGroupQueryCold() = benchmarkFeatureQuery(StartupMode.COLD)
 
     @Test
-    fun startupColdNoPermissionRequest() {
-        benchmarkStartup(
-            setupBlock =
-            { allowAllRequiredPerms(perms = APP_REQUIRED_PERMISSIONS.toTypedArray()) }
-        )
-    }
+    fun featureGroupQueryWarm() = benchmarkFeatureQuery(StartupMode.WARM)
 
-    @Test
-    fun startupWarmNoPermissionRequest() {
-        benchmarkStartup(
-            startupMode = StartupMode.WARM,
-            setupBlock =
-            { allowAllRequiredPerms(perms = APP_REQUIRED_PERMISSIONS.toTypedArray()) }
-        )
-    }
-
-    @Test
-    fun startupHotNoPermissionRequest() {
-        benchmarkStartup(
-            startupMode = StartupMode.HOT,
-            setupBlock =
-            { allowAllRequiredPerms(perms = APP_REQUIRED_PERMISSIONS.toTypedArray()) }
-        )
-    }
-
-    private fun benchmarkStartup(
-        setupBlock: MacrobenchmarkScope.() -> Unit = {},
-        startupMode: StartupMode? = StartupMode.COLD
-    ) {
+    @OptIn(ExperimentalMetricApi::class)
+    private fun benchmarkFeatureQuery(startupMode: StartupMode) {
         benchmarkRule.measureRepeated(
             packageName = JCA_PACKAGE_NAME,
-            metrics = listOf(StartupTimingMetric()),
+            metrics = listOf(
+                TraceSectionMetric("JCA:UpdateSystemConstraints"),
+                TraceSectionMetric("JCA:IsGroupingSupported", TraceSectionMetric.Mode.Sum),
+                TraceSectionMetric("JCA:BuildPipeline", TraceSectionMetric.Mode.Sum),
+                TraceSectionMetric("JCA:OrchestrateQuery", TraceSectionMetric.Mode.Sum),
+                TraceSectionMetric("JCA:GetCameraInfo", TraceSectionMetric.Mode.Sum),
+                TraceSectionMetric("JCA:CreateVideoUseCase", TraceSectionMetric.Mode.Sum),
+                TraceSectionMetric("JCA:CreateSessionConfig", TraceSectionMetric.Mode.Sum),
+                TraceSectionMetric("JCA:CreatePreviewUseCase", TraceSectionMetric.Mode.Sum),
+                TraceSectionMetric("JCA:CreateImageUseCase", TraceSectionMetric.Mode.Sum),
+                TraceSectionMetric("JCA:CreateCameraEffects", TraceSectionMetric.Mode.Sum),
+                TraceSectionMetric("JCA:FCQValidation", TraceSectionMetric.Mode.Sum)
+            ),
             iterations = DEFAULT_TEST_ITERATIONS,
             startupMode = startupMode,
-            setupBlock = setupBlock
+            setupBlock = {
+                allowAllRequiredPerms(perms = APP_REQUIRED_PERMISSIONS.toTypedArray())
+            }
         ) {
             pressHome()
             val context = androidx.test.platform.app.InstrumentationRegistry
                 .getInstrumentation().context
             val intent = context.packageManager.getLaunchIntentForPackage(JCA_PACKAGE_NAME)?.apply {
                 addFlags(
-                    android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
-                        android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK
+                    Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
                 )
             }
             context.startActivity(intent)

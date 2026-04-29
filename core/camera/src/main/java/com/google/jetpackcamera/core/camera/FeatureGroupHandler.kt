@@ -18,6 +18,8 @@ package com.google.jetpackcamera.core.camera
 import android.util.Log
 import androidx.camera.core.CameraInfo
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.tracing.trace
+import androidx.tracing.traceAsync
 import com.google.jetpackcamera.model.CaptureMode
 import com.google.jetpackcamera.model.DynamicRange
 import com.google.jetpackcamera.model.ImageOutputFormat
@@ -71,7 +73,7 @@ internal class FeatureGroupHandler(
         currentSettings: CameraAppSettings,
         initialSystemConstraints: CameraSystemConstraints,
         currentSystemConstraints: CameraSystemConstraints
-    ): CameraSystemConstraints {
+    ): CameraSystemConstraints = trace("JCA:UpdateSystemConstraints") {
         val initialCameraConstraints =
             requireNotNull(initialSystemConstraints.forCurrentLens(currentSettings))
 
@@ -100,42 +102,11 @@ internal class FeatureGroupHandler(
                     " system constraints without using feature groups. featureDataSet = " +
                     " $featureDataSet."
             )
-            return initialSystemConstraints
+            return@trace initialSystemConstraints
         }
 
         val cameraInfo =
             cameraProvider.getCameraInfo(currentSettings.cameraLensFacing.toCameraSelector())
-
-        /*
-         * TODO: More stabilization + FPS pairs can be supported with CameraX feature group API.
-         *  However, while the following code does provide such support, this function is called
-         *  only when camera session is recreated. So, updating unsupportedStabilizationFpsMap now
-         *  can cause regressions in scenarios where user tries to change both stabilization mode
-         *  and FPS mode from settings page directly. We need to ensure this function is used
-         *  for each setting value update to avoid that.
-         *  Reference code:
-         *  val unsupportedStabilizationFpsMap = buildMap {
-         *      initialCameraConstraints
-         *          .unsupportedStabilizationFpsMap
-         *          .forEach { (stabilizationMode, fpsList) ->
-         *              if (stabilizationMode.toFeatureGroupability() is Nongroupable) {
-         *                  put(stabilizationMode, fpsList)
-         *                  return@forEach
-         *              }
-         *              fpsList.forEach { fps ->
-         *                  if (fps.toFpsFeatureGroupability() is Nongroupable) {
-         *                      put(stabilizationMode, fpsList)
-         *                      return@forEach
-         *                  }
-         *                  if (!cameraAppSettings.copyStabilizationMode(stabilizationMode)
-         *                          .copyTargetFrameRate(fps).isGroupingSupported(cameraInfo)
-         *                  ) {
-         *                      put(stabilizationMode, fpsList)
-         *                  }
-         *              }
-         *          }
-         *  }
-         */
 
         val updatedPerLensConstraints = initialSystemConstraints.perLensConstraints.toMutableMap()
 
@@ -189,7 +160,7 @@ internal class FeatureGroupHandler(
 
         cacheConcurrentHdrJpegRCapability(autoSanitizedSettings, newConstraints)
 
-        return newConstraints
+        newConstraints
     }
 
     /**
@@ -378,21 +349,23 @@ internal class FeatureGroupHandler(
         cameraAppSettings: CameraAppSettings,
         cameraInfo: CameraInfo,
         initialSystemConstraints: CameraSystemConstraints
-    ): Boolean? {
+    ): Boolean? = traceAsync("JCA:IsGroupingSupported", "JCA:IsGroupingSupported".hashCode()) {
         // TODO: Optimize feature group queries via pre-calculation and persistence.
         //  Reconstructing the full SessionConfig and UseCases for every query is expensive.
         //  Consider pre-calculating the 16 possible combinations of groupable features
         //  (HDR, 60FPS, etc.) and persisting the results in a database. This would make UI checks
         //  O(1) across app launches since hardware capabilities are generally static.
 
-        val cameraConstraints =
-            requireNotNull(initialSystemConstraints.forCurrentLens(cameraAppSettings))
-
-        val transientSettings =
-            with(cameraSystem) { cameraAppSettings.toTransientSessionSettings() }
-
-        val sessionSettings = with(cameraSystem) {
-            cameraAppSettings.toSingleCameraSessionSettings(cameraConstraints)
+        val (cameraConstraints, transientSettings, sessionSettings) = trace(
+            "JCA:OrchestrateQuery"
+        ) {
+            val constraints =
+                requireNotNull(initialSystemConstraints.forCurrentLens(cameraAppSettings))
+            val transient = with(cameraSystem) { cameraAppSettings.toTransientSessionSettings() }
+            val session = with(cameraSystem) {
+                cameraAppSettings.toSingleCameraSessionSettings(constraints)
+            }
+            Triple(constraints, transient, session)
         }
 
         if (!sessionSettings.toFeatureGroupabilities().isCompatible()) {
@@ -401,7 +374,7 @@ internal class FeatureGroupHandler(
                 "isGroupingSupported: CameraX feature group is not compatible with this" +
                     " session settings, so returning null. sessionSettings = $sessionSettings"
             )
-            return null
+            return@traceAsync null
         }
 
         // An explicit job is used here because simpler approach like `coroutineScope { ... }`
@@ -410,34 +383,39 @@ internal class FeatureGroupHandler(
         // `coroutineScope` block never completes.
         val job = Job()
 
-        val sessionConfig = with(
-            defaultCameraSessionContext.copy(
-                transientSettings = MutableStateFlow(transientSettings).asStateFlow()
-            )
-        ) {
-            val videoCaptureUseCase =
-                createVideoUseCase(
-                    cameraInfo,
-                    cameraAppSettings.aspectRatio,
-                    cameraAppSettings.captureMode,
-                    backgroundDispatcher,
-                    cameraAppSettings.targetFrameRate.takeIfNoFeatureGroup(sessionSettings),
-                    cameraAppSettings.stabilizationMode.takeIfNoFeatureGroup(sessionSettings),
-                    cameraAppSettings.dynamicRange.takeIfNoFeatureGroup(sessionSettings),
-                    cameraAppSettings.videoQuality.takeIfNoFeatureGroup(sessionSettings)
+        val sessionConfig = traceAsync("JCA:BuildPipeline", "JCA:BuildPipeline".hashCode()) {
+            with(
+                defaultCameraSessionContext.copy(
+                    transientSettings = MutableStateFlow(transientSettings).asStateFlow()
                 )
+            ) {
+                val videoCaptureUseCase = trace("JCA:CreateVideoUseCase") {
+                    createVideoUseCase(
+                        cameraInfo,
+                        cameraAppSettings.aspectRatio,
+                        cameraAppSettings.captureMode,
+                        backgroundDispatcher,
+                        cameraAppSettings.targetFrameRate.takeIfNoFeatureGroup(sessionSettings),
+                        cameraAppSettings.stabilizationMode.takeIfNoFeatureGroup(sessionSettings),
+                        cameraAppSettings.dynamicRange.takeIfNoFeatureGroup(sessionSettings),
+                        cameraAppSettings.videoQuality.takeIfNoFeatureGroup(sessionSettings)
+                    )
+                }
 
-            createSessionConfig(
-                cameraConstraints = cameraConstraints,
-                initialTransientSettings = transientSettings,
-                videoCaptureUseCase = videoCaptureUseCase,
-                sessionSettings = sessionSettings,
-                sessionScope = CoroutineScope(defaultDispatcher + job)
-            )
+                createSessionConfig(
+                    cameraConstraints = cameraConstraints,
+                    initialTransientSettings = transientSettings,
+                    videoCaptureUseCase = videoCaptureUseCase,
+                    sessionSettings = sessionSettings,
+                    sessionScope = CoroutineScope(defaultDispatcher + job)
+                )
+            }
         }
 
-        return cameraInfo.isSessionConfigSupported(sessionConfig).apply {
-            job.cancel()
+        return@traceAsync trace("JCA:FCQValidation") {
+            cameraInfo.isSessionConfigSupported(sessionConfig).apply {
+                job.cancel()
+            }
         }
     }
 
